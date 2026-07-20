@@ -36,6 +36,11 @@ def data_signature():
     return tuple((path.name, path.stat().st_size, path.stat().st_mtime_ns) for path in sorted(files))
 
 
+@st.cache_data(show_spinner=False, ttl=300)
+def cached_snapshot(chip, xq, current, period, thresholds):
+    return build_stock_snapshot_average(chip, xq, pd.Timestamp(current), period, thresholds, "large")
+
+
 def equal_range(series, center):
     values = series.replace([np.inf, -np.inf], np.nan).dropna()
     span = max(abs(values.min() - center), abs(values.max() - center), .05) if len(values) else 1
@@ -88,30 +93,33 @@ with st.sidebar:
             st.error(f"讀取資料失敗：{exc}")
             st.stop()
 
-    st.divider()
-    st.subheader("大戶／散戶標準")
-    retail_limit = st.selectbox("散戶上限（張）", BUCKET_LIMITS, index=BUCKET_LIMITS.index(50))
-    large_limit = st.selectbox("大戶下限（張）", BUCKET_LIMITS, index=BUCKET_LIMITS.index(400))
-    thresholds = (retail_limit, large_limit)
+    with st.form("analysis_settings"):
+        st.divider()
+        st.subheader("大戶／散戶標準")
+        retail_limit = st.selectbox("散戶上限（張）", BUCKET_LIMITS, index=BUCKET_LIMITS.index(50))
+        large_limit = st.selectbox("大戶下限（張）", BUCKET_LIMITS, index=BUCKET_LIMITS.index(400))
+        thresholds = (retail_limit, large_limit)
+        labels = group_labels(thresholds)
+        st.caption(f"{labels['retail']}；{labels['large']}")
+        analysis_group = "large"
+        st.caption("門檻依集保公開資料的原始級距提供，確保重算結果準確。")
+    
+        dates = sorted(pd.to_datetime(chip.date.unique()), reverse=True)
+        current = st.selectbox("觀察日期", dates, format_func=lambda date: pd.Timestamp(date).strftime("%Y-%m-%d"))
+        period = st.selectbox("平均比較期間", list(PERIOD_WEEKS))
+        st.divider()
+        min_price = st.number_input("最低股價（元）", 0., value=30., step=5.)
+        min_volume = st.number_input("最低成交量（張）", 0, value=300, step=100)
+        min_revenue = st.number_input("最低月營收 YoY（%）", value=0., step=5.)
+        min_group = st.number_input("族群最低入選家數", 1, value=3)
+        aligned = st.toggle("只看主要群組增加且散戶減少", True)
+        st.form_submit_button("套用分析設定", type="primary", width="stretch")
+
     if retail_limit >= large_limit:
         st.error("門檻錯誤：散戶上限必須小於大戶下限。")
         st.stop()
-    labels = group_labels(thresholds)
-    st.caption(f"{labels['retail']}；{labels['large']}")
-    analysis_group = "large"
-    st.caption("門檻依集保公開資料的原始級距提供，確保重算結果準確。")
 
-    dates = sorted(pd.to_datetime(chip.date.unique()), reverse=True)
-    current = st.selectbox("觀察日期", dates, format_func=lambda date: pd.Timestamp(date).strftime("%Y-%m-%d"))
-    period = st.selectbox("平均比較期間", list(PERIOD_WEEKS))
-    st.divider()
-    min_price = st.number_input("最低股價（元）", 0., value=30., step=5.)
-    min_volume = st.number_input("最低成交量（張）", 0, value=300, step=100)
-    min_revenue = st.number_input("最低月營收 YoY（%）", value=0., step=5.)
-    min_group = st.number_input("族群最低入選家數", 1, value=3)
-    aligned = st.toggle("只看主要群組增加且散戶減少", True)
-
-stocks, start, end, weeks, regrouped_chip = build_stock_snapshot_average(chip, xq, pd.Timestamp(current), period, thresholds, analysis_group)
+stocks, start, end, weeks, regrouped_chip = cached_snapshot(chip, xq, current, period, thresholds)
 if start is None:
     st.error(f"觀察日前沒有足夠資料可計算「{period}」平均。")
     st.stop()
