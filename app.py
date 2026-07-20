@@ -26,14 +26,14 @@ def equal_range(series,center):
     return [center-span*1.12,center+span*1.12]
 
 def bubble_chart(groups):
-    p=groups.dropna(subset=["large_change","consensus"]).copy(); p["coverage_text"]=(p.coverage*100).round(1).astype(str)+"%"; p["compare_text"]=p.comparable_count.astype(str)+"/"+p.selected_count.astype(str)
-    fig=px.scatter(p,x="large_change",y="consensus",size="selected_count",color="comparable_rate",text="industry",size_max=62,color_continuous_scale=[[0,"#53657c"],[.5,"#3977ff"],[1,"#42e8ca"]],custom_data=["industry","rank","selected_count","universe_count","coverage_text","compare_text","retail_decrease","avg_revenue_yoy","leaders"])
-    fig.update_traces(textposition="top center",marker=dict(line=dict(width=1.3,color="#d2f5ff"),opacity=.88),hovertemplate="<b>%{customdata[0]}</b>｜第 %{customdata[1]} 名<br>大戶 400+ 相對期間平均：%{x:.2f} pct<br>共識：%{y:.3f}<br>入選／母體：%{customdata[2]} / %{customdata[3]}<br>覆蓋率：%{customdata[4]}<br>可比較：%{customdata[5]}<br>散戶 50- 相對平均減少：%{customdata[6]:.2f} pct<br>平均營收 YoY：%{customdata[7]:.1f}%<br>增持前五：%{customdata[8]}<extra></extra>")
+    p=groups.dropna(subset=["large_change","consensus"]).copy(); p["coverage_text"]=(p.coverage*100).round(2).map(lambda value:f"{value:.2f}%")
+    fig=px.scatter(p,x="large_change",y="consensus",size="selected_count",color="retail_decrease",text="industry",size_max=62,color_continuous_scale=[[0,"#246BFD"],[.5,"#E8EEF8"],[1,"#FF8A3D"]],custom_data=["industry","rank","selected_count","universe_count","coverage_text","retail_decrease","avg_revenue_yoy","leaders"])
+    fig.update_traces(textposition="top center",marker=dict(line=dict(width=1.3,color="#d2f5ff"),opacity=.88),hovertemplate="<b>%{customdata[0]}</b>｜第 %{customdata[1]} 名<br>大戶 400+ 相對期間平均：%{x:.2f} pct<br>共識：%{y:.3f}<br>入選／母體：%{customdata[2]} / %{customdata[3]}<br>覆蓋率：%{customdata[4]}<br>散戶 50- 相對平均減少：%{customdata[5]:.2f} pct<br>平均營收 YoY：%{customdata[6]:.1f}%<br>增持前五：%{customdata[7]}<extra></extra>")
     xc,yc=0.,float(p.consensus.median()); xr,yr=equal_range(p.large_change,xc),equal_range(p.consensus,yc)
     for x0,x1,y0,y1,color in [(xr[0],xc,yr[0],yc,"rgba(255,107,129,.06)"),(xc,xr[1],yr[0],yc,"rgba(66,217,255,.06)"),(xr[0],xc,yc,yr[1],"rgba(130,139,160,.06)"),(xc,xr[1],yc,yr[1],"rgba(66,232,202,.07)")]: fig.add_shape(type="rect",x0=x0,x1=x1,y0=y0,y1=y1,fillcolor=color,line_width=0,layer="below")
     fig.add_vline(x=xc,line_dash="dot",line_color="#7087a7"); fig.add_hline(y=yc,line_dash="dot",line_color="#7087a7")
     for label,x,y in [("共識弱｜增持弱",.02,.04),("共識弱｜增持強",.98,.04),("共識強｜增持弱",.02,.96),("共識強｜增持強",.98,.96)]: fig.add_annotation(text=label,x=x,y=y,xref="paper",yref="paper",showarrow=False,xanchor="left" if x<.5 else "right",font=dict(color="#91a6c3"))
-    fig.update_layout(height=640,paper_bgcolor="rgba(0,0,0,0)",plot_bgcolor="#091426",font_color="#dbe9f6",margin=dict(l=20,r=20,t=25,b=20),xaxis=dict(title="最新週大戶 400+－期間平均（百分點）",range=xr,gridcolor="#263954"),yaxis=dict(title="族群共識分數",range=yr,gridcolor="#263954"),coloraxis_colorbar=dict(title="可比較率",tickformat=".0%"),clickmode="event+select")
+    fig.update_layout(height=640,paper_bgcolor="rgba(0,0,0,0)",plot_bgcolor="#091426",font_color="#dbe9f6",margin=dict(l=20,r=20,t=25,b=20),xaxis=dict(title="最新週大戶 400+－期間平均（百分點）",range=xr,gridcolor="#263954"),yaxis=dict(title="族群共識分數",range=yr,gridcolor="#263954"),coloraxis_colorbar=dict(title="散戶減少",ticksuffix=" pct"),clickmode="event+select")
     return fig
 
 st.markdown('<div class="hero"><small>TAIWAN CHIP ROTATION INTELLIGENCE</small><br><b>台股籌碼輪動雷達</b><br>集保 × TEJ 歷史 × XQ 基本面｜最新週相對期間歷史平均</div>',unsafe_allow_html=True)
@@ -61,15 +61,15 @@ groups=groups[groups.selected_count>=min_group]
 if groups.empty: st.warning("目前沒有達到最少家數的族群。"); st.stop()
 period_text=f"{pd.Timestamp(start):%Y-%m-%d}～{pd.Timestamp(end):%Y-%m-%d}（{weeks}週平均）"
 for col,(label,value) in zip(st.columns(5),[("觀察日期",pd.Timestamp(current).strftime("%Y-%m-%d")),("平均比較期間",period_text),("入選股票",f"{stocks.code.nunique():,}"),("入選族群",f"{len(groups):,}"),("大戶相對平均",f"{stocks.large_change.median():+.2f} pct")]): col.metric(label,value)
-st.subheader("產業族群互動泡泡圖"); st.markdown('<div class="note">X＝最新週大戶 400+－比較期間各週平均；Y＝覆蓋率 × ln(1＋入選家數)；泡泡大小＝入選家數；顏色＝可比較率。點擊泡泡會切換個股明細。</div>',unsafe_allow_html=True)
+st.subheader("產業族群互動泡泡圖"); st.markdown('<div class="note">X＝最新週大戶 400+－比較期間各週平均；Y＝覆蓋率 × ln(1＋入選家數)；泡泡大小＝入選家數；顏色＝散戶 50 張以下相對期間平均的減少幅度。點擊泡泡會切換個股明細。</div>',unsafe_allow_html=True)
 event=st.plotly_chart(bubble_chart(groups),width="stretch",on_select="rerun",selection_mode="points",key="rotation")
 industries=groups.industry.tolist()
 if "selected_industry" not in st.session_state or st.session_state.selected_industry not in industries: st.session_state.selected_industry=industries[0]
 try:
     if event.selection.points: st.session_state.selected_industry=event.selection.points[0]["customdata"][0]
 except (AttributeError,KeyError,IndexError,TypeError): pass
-ranking=groups[["rank","industry","consensus","selected_count","universe_count","coverage","large_change","retail_decrease","comparable_rate","avg_revenue_yoy","total_volume"]]
-st.subheader("族群排行榜"); st.dataframe(ranking,column_config={"rank":"排名","industry":"次產業","consensus":"共識分數","selected_count":"入選家數","universe_count":"母體家數","coverage":st.column_config.ProgressColumn("覆蓋率",min_value=0,max_value=1,format="%.1%%"),"large_change":"大戶相對平均","retail_decrease":"散戶相對平均減少","comparable_rate":st.column_config.ProgressColumn("可比較率",min_value=0,max_value=1,format="%.0%%"),"avg_revenue_yoy":"平均營收 YoY","total_volume":"總成交量"},hide_index=True,width="stretch")
+ranking=groups.assign(coverage_pct=groups.coverage*100)[["rank","industry","consensus","selected_count","universe_count","coverage_pct","large_change","retail_decrease","avg_revenue_yoy","total_volume"]]
+st.subheader("族群排行榜"); st.dataframe(ranking,column_config={"rank":"排名","industry":"次產業","consensus":"共識分數","selected_count":"入選家數","universe_count":"母體家數","coverage_pct":st.column_config.NumberColumn("覆蓋率",format="%.2f%%"),"large_change":"大戶相對平均","retail_decrease":"散戶相對平均減少","avg_revenue_yoy":"平均營收 YoY","total_volume":"總成交量"},hide_index=True,width="stretch")
 selected=st.selectbox("查看族群",industries,key="selected_industry"); detail=stocks[stocks.industry==selected].sort_values("large_change",ascending=False)
 columns=["code","name","price","volume","revenue_yoy","large_400","avg_large_400","large_change","retail_50","avg_retail_50","retail_decrease","history_weeks","holders","industry_tags"]
 st.subheader(f"{selected}｜個股明細"); st.dataframe(detail[columns],column_config={"code":"代碼","name":"名稱","price":"股價","volume":"成交量","revenue_yoy":"月營收 YoY","large_400":"最新大戶 400+","avg_large_400":"期間平均大戶 400+","large_change":"相對平均變化","retail_50":"最新散戶 50-","avg_retail_50":"期間平均散戶 50-","retail_decrease":"相對平均減少","history_weeks":"平均週數","holders":"股東人數","industry_tags":"所有次產業"},hide_index=True,width="stretch")
