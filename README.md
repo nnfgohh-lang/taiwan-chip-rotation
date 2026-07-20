@@ -1,46 +1,34 @@
-# 台股籌碼輪動雷達
+from __future__ import annotations
 
-整合集保股權分散原始長表、TEJ 歷史寬表與 XQ／Total Pool 基本面資料的 Streamlit 研究網站。
+import pandas as pd
 
-## 已整合功能
+from .analysis_v2 import *
 
-- 大戶標準：400 張以上（集保第 12–15 級）。
-- 散戶標準：50 張以下（集保第 1–8 級，包含零股／1 張以下）。
-- 比較週期：前 1 週、前 1 月、前 1 季、前 1 年；預設前 1 週。
-- TEJ 與集保歷史自動合併；相同日期與股票優先使用集保。
-- XQ 欄位：次產業、月營收年增率、成交量、股價。
-- 互動產業泡泡圖、等比例四象限、點擊泡泡連動個股明細。
-- 個股 400+、50-、1000+ 持股趨勢及營收、成交量、股價資訊。
-- 缺少基期資料時保留缺值，不會錯誤補成 0；以泡泡顏色顯示可比較率。
 
-## 啟動方式
+PERIOD_WEEKS = {"前 1 週": 1, "前 1 月": 4, "前 1 季": 13, "前 1 年": 52}
 
-```powershell
-python -m pip install -r requirements.txt
-python -m streamlit run app.py
-```
 
-瀏覽器開啟 `http://localhost:8501`。
-
-## 資料夾
-
-```text
-data/
-├─ tej/   # TEJ 歷史 .xlsx
-├─ tdcc/  # 每週集保原始 .csv
-└─ xq/    # XQ／Total Pool .csv
-```
-
-網站也保留「自行上傳檔案」模式，可在頁面側欄一次上傳多份 TEJ／集保資料及一份 XQ 檔。
-
-## 指標定義
-
-- X 軸：族群內可比較個股的 400+ 持股變化中位數。
-- Y 軸／共識分數：`產業覆蓋率 × ln(1 + 入選家數)`。
-- 泡泡大小：符合篩選條件的入選家數。
-- 泡泡顏色：本期股票中具有基期資料的可比較率。
-- 1 月、1 季、1 年分別以 28、91、365 天前為目標，使用資料庫內最接近且早於觀察日的週資料。
-
-## GitHub 與授權資料
-
-TEJ 與 XQ 資料可能受授權限制。上傳 GitHub 前請確認 Repository 為 **Private**，並確認你的資料授權允許分享。若要公開程式碼，請移除 `data/tej` 與 `data/xq` 的實際資料，只留下自有或可公開的示範資料。
+def build_stock_snapshot_average(chip: pd.DataFrame, xq: pd.DataFrame, current_date: pd.Timestamp, period: str):
+    """取觀察日前最近 N 個資料週，計算逐股歷史平均。"""
+    current_date = pd.Timestamp(current_date)
+    current = chip[chip["date"] == current_date].copy()
+    prior_dates = sorted(pd.to_datetime(chip.loc[chip["date"] < current_date, "date"].unique()), reverse=True)
+    selected_dates = prior_dates[:PERIOD_WEEKS[period]]
+    history = chip[chip["date"].isin(selected_dates)].copy()
+    if history.empty:
+        return current.merge(xq, on="code", how="left", suffixes=("", "_xq")), None, None, 0
+    measures = ["large_400", "retail_50", "mid_50_400", "large_400_1000", "super_1000", "holders"]
+    baseline = history.groupby("code", as_index=False)[measures].mean()
+    baseline = baseline.rename(columns={col: f"avg_{col}" for col in measures})
+    counts = history.groupby("code")["date"].nunique().rename("history_weeks").reset_index()
+    merged = current.merge(baseline, on="code", how="left").merge(counts, on="code", how="left")
+    merged = merged.merge(xq, on="code", how="left", suffixes=("", "_xq"))
+    merged["large_change"] = merged["large_400"] - merged["avg_large_400"]
+    merged["retail_decrease"] = merged["avg_retail_50"] - merged["retail_50"]
+    merged["holders_decrease"] = merged["avg_holders"] - merged["holders"]
+    merged["comparable"] = merged["avg_large_400"].notna()
+    merged["history_weeks"] = merged["history_weeks"].fillna(0).astype(int)
+    if "name_xq" in merged:
+        merged["name"] = merged["name_xq"].fillna(merged.get("name", ""))
+    merged["industry"] = merged["industry"].fillna("未分類")
+    return merged, history["date"].min(), history["date"].max(), len(selected_dates)
