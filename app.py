@@ -56,7 +56,7 @@ def bubble_chart(groups, selected_label, retail_label):
     chart["coverage_text"] = (chart.coverage * 100).map(lambda value: f"{value:.2f}%")
     fig = px.scatter(
         chart, x="analysis_change", y="consensus", size="selected_count", color="retail_decrease",
-        text="industry", size_max=62, color_continuous_scale=[[0, "#168BFF"], [.5, "#6E68D9"], [1, "#FF7A2F"]],
+        text="industry", size_max=62, color_continuous_scale=[[0, "#126BFF"], [.5, "#EAF2FF"], [1, "#FF355D"]],
         custom_data=["industry", "rank", "selected_count", "universe_count", "coverage_text", "retail_decrease", "avg_revenue_yoy", "leaders"],
     )
     fig.update_traces(textposition="top center", hovertemplate=(
@@ -136,10 +136,15 @@ for column, (label, value) in zip(st.columns(5), metrics):
 
 st.subheader("產業族群互動泡泡圖")
 st.markdown(f'<div class="note">X＝{selected_label}相對期間平均變化；Y＝覆蓋率 × ln(1＋入選家數)；大小＝入選家數；顏色＝{retail_label}減少幅度。點擊泡泡可切換個股明細。</div>', unsafe_allow_html=True)
-st.plotly_chart(bubble_chart(groups, selected_label, retail_label), width="stretch", key="rotation")
+event = st.plotly_chart(bubble_chart(groups, selected_label, retail_label), width="stretch", on_select="rerun", selection_mode="points", key="rotation")
 industries = groups.industry.tolist()
 if "selected_industry" not in st.session_state or st.session_state.selected_industry not in industries:
     st.session_state.selected_industry = industries[0]
+try:
+    if event.selection.points:
+        st.session_state.selected_industry = event.selection.points[0]["customdata"][0]
+except (AttributeError, KeyError, IndexError, TypeError):
+    pass
 
 ranking = pd.DataFrame({
     "排名": groups["rank"].map(lambda value: f"{value:,.0f}"), "次產業": groups["industry"],
@@ -166,24 +171,39 @@ detail_display = pd.DataFrame({
     "採樣週數": detail["history_weeks"], "股東人數": detail["holders"], "所有次產業": detail["industry_tags"],
 })
 st.subheader(f"{selected}｜個股明細")
-st.dataframe(detail_display, hide_index=True, width="stretch")
+st.caption("點選下表任一個股列，下方持股走勢會自動切換。")
+stock_event = st.dataframe(detail_display, hide_index=True, width="stretch", on_select="rerun", selection_mode="single-row", key="stock_table")
 
 options = detail.apply(lambda row: f"{row.code} {row['name']}", axis=1).tolist()
+try:
+    if stock_event.selection.rows:
+        selected_row = stock_event.selection.rows[0]
+        if 0 <= selected_row < len(options):
+            st.session_state.selected_stock_option = options[selected_row]
+except (AttributeError, KeyError, IndexError, TypeError):
+    pass
 if options:
-    choice = st.selectbox("查看個股持股走勢", options)
+    if st.session_state.get("selected_stock_option") not in options:
+        st.session_state.selected_stock_option = options[0]
+    choice = st.selectbox("查看個股持股走勢", options, key="selected_stock_option")
     code = choice.split(" ", 1)[0]
     row = detail[detail.code == code].iloc[0]
-    history = apply_fixed_groups(chip[chip.code == code]).sort_values("date")
-    st.subheader(f"{row['name']}（{code}）｜大戶與散戶持股走勢")
+    history = chip[chip.code == code].sort_values("date")
+    st.subheader(f"{row['name']}（{code}）｜四級距持股結構走勢")
     structure = go.Figure()
-    colors = {"retail": "#ff7c96", "mid": "#ffc857", "large": "#42d9ff", "super": "#42e8ca"}
-    for key in ("retail", "large"):
-        structure.add_trace(go.Scatter(x=history.date, y=history[f"group_{key}"], name=labels[key], mode="lines+markers", line=dict(color=colors[key], width=2.6), hovertemplate="%{y:,.2f}%<extra>%{fullData.name}</extra>"))
+    structure_fields = [
+        ("retail_50", "散戶｜50 張以下", "#FF355D"),
+        ("mid_50_400", "中實戶｜50–400 張", "#FF8FA3"),
+        ("large_400_1000", "大戶｜400–1000 張", "#46B8FF"),
+        ("super_1000", "超級大戶｜1000 張以上", "#126BFF"),
+    ]
+    for field, name, color in structure_fields:
+        structure.add_trace(go.Scatter(x=history.date, y=history[field], name=name, mode="lines+markers", line=dict(color=color, width=2.6), hovertemplate="%{y:,.2f}%<extra>%{fullData.name}</extra>"))
     structure.update_layout(height=460, paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="#091426", font_color="#dbe9f6", yaxis_title="持股比例（%）", xaxis_title="資料日期", hovermode="x unified", legend=dict(orientation="h", y=1.15))
     st.plotly_chart(structure, width="stretch")
     latest = history.iloc[-1]
-    st.caption("最新結構：" + "｜".join(f"{GROUP_NAMES[key]} {latest[f'group_{key}']:,.2f}%" for key in ("retail", "large")))
+    st.caption(f"最新結構：散戶 {latest.retail_50:,.2f}%｜中實戶 {latest.mid_50_400:,.2f}%｜大戶 {latest.large_400_1000:,.2f}%｜超級大戶 {latest.super_1000:,.2f}%")
 
 st.download_button("下載目前族群個股 CSV", detail_display.to_csv(index=False).encode("utf-8-sig"), f"{selected}_個股明細.csv", "text/csv")
 with st.expander("指標定義與品質說明"):
-    st.markdown(f"- 目前分群：{labels['retail']}；{labels['large']}。\n- 本版固定使用大戶 400 張以上、散戶 50 張以下。\n- 比較值＝最新週持股比例－比較期間各週平均；散戶減少採反向計算。\n- 前 1 週／1 月／1 季／1 年採最近 1／4／13／52 個資料週平均。")
+    st.markdown("- 散戶：50 張以下；大戶：400 張以上（包含超級大戶）。\n- 持股走勢另拆為散戶／中實戶／大戶／超級大戶四個級距。\n- 比較值＝最新週持股比例－比較期間各週平均；散戶減少採反向計算。\n- 前 1 週／1 月／1 季採最近 1／4／13 個資料週平均。")

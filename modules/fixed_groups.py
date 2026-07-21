@@ -5,7 +5,7 @@ import pandas as pd
 
 from .analysis_v2 import *
 
-PERIOD_WEEKS = {"前 1 週": 1, "前 1 月": 4, "前 1 季": 13, "前 1 年": 52}
+PERIOD_WEEKS = {"前 1 週": 1, "前 1 月": 4, "前 1 季": 13}
 
 
 def apply_fixed_groups(frame: pd.DataFrame) -> pd.DataFrame:
