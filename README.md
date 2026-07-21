@@ -1,0 +1,39 @@
+# 台股籌碼動能雷達（本機快速版）
+
+固定使用以下持股定義：
+
+- 散戶：50 張以下
+- 大戶：400 張以上，包含 1000 張以上
+
+本版已完全移除大戶／散戶門檻調整與「套用設定」按鈕。觀察日期、比較基期及篩選條件選取後會直接更新。
+
+## 雙擊啟動
+
+1. 將 ZIP 完整解壓縮。
+2. 雙擊 `start-local.bat`。
+3. 第一次啟動會自動建立 `.venv` 並安裝套件，需要幾分鐘。
+4. 瀏覽器會自動開啟 `http://localhost:8501`。
+5. 使用期間請勿關閉黑色視窗。
+
+電腦需先安裝 Python。若尚未安裝，請至 <https://www.python.org/downloads/> 下載，並在安裝時勾選 `Add Python to PATH`。
+
+## 載入優化
+
+專案內附與目前原始資料相符的 Parquet 預處理快取。正常啟動會直接讀取約 2 MB 的快取，不必每次重新解析約 18 MB 的 Excel。若 `data/tej`、`data/tdcc` 或 `data/xq` 的檔名或大小改變，程式會自動改讀最新原始資料，確保結果不會沿用舊資料。
+
+## 手動啟動
+
+```powershell
+py -m pip install -r requirements.txt
+py -m streamlit run app.py
+```
+
+## 資料目錄
+
+```text
+data/
+├─ cache/ # 預處理快取
+├─ tdcc/  # 集保股權分散表 CSV
+├─ tej/   # TEJ Excel
+└─ xq/    # XQ 選股結果 CSV
+```
