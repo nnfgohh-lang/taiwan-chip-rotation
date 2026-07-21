@@ -45,7 +45,7 @@ def build_stock_snapshot_average(chip: pd.DataFrame, xq: pd.DataFrame, current_d
     selected_dates = prior_dates[:PERIOD_WEEKS[period]]
     history = regrouped[regrouped["date"].isin(selected_dates)].copy()
     if history.empty:
-        return current.merge(xq, on="code", how="left", suffixes=("", "_xq")), None, None, 0, regrouped
+        return current.merge(xq, on="code", how="left", suffixes=("", "_xq")), None, None, 0
     measures = [*(f"group_{key}" for key in GROUP_KEYS), "holders"]
     baseline = history.groupby("code", as_index=False)[measures].mean().rename(columns={column: f"avg_{column}" for column in measures})
     counts = history.groupby("code")["date"].nunique().rename("history_weeks").reset_index()
@@ -60,7 +60,7 @@ def build_stock_snapshot_average(chip: pd.DataFrame, xq: pd.DataFrame, current_d
     if "name_xq" in merged:
         merged["name"] = merged["name_xq"].fillna(merged.get("name", ""))
     merged["industry"] = merged["industry"].fillna("未分類")
-    return merged, history["date"].min(), history["date"].max(), len(selected_dates), regrouped
+    return merged, history["date"].min(), history["date"].max(), len(selected_dates)
 
 
 def aggregate_industries(stocks: pd.DataFrame, universe: pd.DataFrame) -> pd.DataFrame:

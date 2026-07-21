@@ -8,7 +8,7 @@ import streamlit as st
 
 from modules.simple_groups import (
     BUCKET_LIMITS, GROUP_KEYS, GROUP_NAMES, PERIOD_WEEKS, aggregate_industries,
-    build_stock_snapshot_average, combine_chip_sources, group_labels, parse_tdcc,
+    apply_custom_groups, build_stock_snapshot_average, combine_chip_sources, group_labels, parse_tdcc,
     parse_tej, parse_xq,
 )
 
@@ -23,7 +23,7 @@ st.markdown("""<style>
 
 
 
-@st.cache_data(show_spinner=False, ttl=300)
+@st.cache_resource(show_spinner=False, ttl=3600, max_entries=1)
 def local_data(signature):
     tej = [parse_tej(path) for path in sorted((DATA / "tej").glob("*.xlsx"))]
     tdcc = [parse_tdcc(path) for path in sorted((DATA / "tdcc").glob("*.csv"))]
@@ -36,7 +36,7 @@ def data_signature():
     return tuple((path.name, path.stat().st_size, path.stat().st_mtime_ns) for path in sorted(files))
 
 
-@st.cache_data(show_spinner=False, ttl=300)
+@st.cache_data(show_spinner=False, ttl=300, max_entries=2)
 def cached_snapshot(chip, xq, current, period, thresholds):
     return build_stock_snapshot_average(chip, xq, pd.Timestamp(current), period, thresholds, "large")
 
@@ -119,7 +119,7 @@ with st.sidebar:
         st.error("門檻錯誤：散戶上限必須小於大戶下限。")
         st.stop()
 
-stocks, start, end, weeks, regrouped_chip = cached_snapshot(chip, xq, current, period, thresholds)
+stocks, start, end, weeks = cached_snapshot(chip, xq, current, period, thresholds)
 if start is None:
     st.error(f"觀察日前沒有足夠資料可計算「{period}」平均。")
     st.stop()
@@ -186,7 +186,7 @@ if options:
     choice = st.selectbox("查看個股持股走勢", options)
     code = choice.split(" ", 1)[0]
     row = detail[detail.code == code].iloc[0]
-    history = regrouped_chip[regrouped_chip.code == code].sort_values("date")
+    history = apply_custom_groups(chip[chip.code == code], thresholds).sort_values("date")
     st.subheader(f"{row['name']}（{code}）｜大戶與散戶持股走勢")
     structure = go.Figure()
     colors = {"retail": "#ff7c96", "mid": "#ffc857", "large": "#42d9ff", "super": "#42e8ca"}
