@@ -8,6 +8,38 @@ from .analysis_v2 import *
 PERIOD_WEEKS = {"前 1 週": 1, "前 1 月": 4, "前 1 季": 13}
 
 
+def _industry_list(value, fallback="未分類"):
+    """Return all XQ industry tags for a stock, preserving order and removing duplicates."""
+    text = "" if pd.isna(value) else str(value).strip()
+    items = [item.strip() for item in text.split("、") if item.strip() and item.strip().lower() != "nan"]
+    if not items:
+        items = [fallback]
+    return list(dict.fromkeys(items))
+
+
+def explode_industries(frame: pd.DataFrame) -> pd.DataFrame:
+    """Expand one stock into one row per industry tag for multi-industry analysis."""
+    if frame.empty:
+        return frame.copy()
+    result = frame.copy()
+    if "industry_tags" in result.columns:
+        result["industry"] = result.apply(
+            lambda row: _industry_list(row.get("industry_tags"), row.get("industry", "未分類")), axis=1
+        )
+    else:
+        result["industry"] = result["industry"].fillna("未分類").map(lambda value: [str(value).strip() or "未分類"])
+    return result.explode("industry", ignore_index=True)
+
+
+def industry_member_mask(frame: pd.DataFrame, industry: str) -> pd.Series:
+    """True when the selected industry appears in any tag position, not only the first one."""
+    if "industry_tags" not in frame.columns:
+        return frame["industry"].fillna("未分類").eq(industry)
+    return frame.apply(
+        lambda row: industry in _industry_list(row.get("industry_tags"), row.get("industry", "未分類")), axis=1
+    )
+
+
 def apply_fixed_groups(frame: pd.DataFrame) -> pd.DataFrame:
     """Expose fixed 50- retail and 400+ large-holder fields for the UI."""
     result = frame.copy()
@@ -52,9 +84,13 @@ def build_stock_snapshot_average(
 def aggregate_industries(stocks: pd.DataFrame, universe: pd.DataFrame) -> pd.DataFrame:
     if stocks.empty:
         return pd.DataFrame()
-    denominator = universe.groupby("industry")["code"].nunique().rename("universe_count")
+    # A stock can belong to several XQ industries. Expand all tags so secondary tags
+    # (for example 順德's 導線架 tag) participate in both numerator and denominator.
+    expanded_stocks = explode_industries(stocks)
+    expanded_universe = explode_industries(universe)
+    denominator = expanded_universe.groupby("industry")["code"].nunique().rename("universe_count")
     rows = []
-    for industry, group in stocks.groupby("industry"):
+    for industry, group in expanded_stocks.groupby("industry"):
         comparable = group[group["comparable"]]
         count = group["code"].nunique()
         universe_count = int(denominator.get(industry, count))

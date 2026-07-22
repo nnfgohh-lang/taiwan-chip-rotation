@@ -8,7 +8,7 @@ import streamlit as st
 
 from modules.fixed_groups import (
     PERIOD_WEEKS, aggregate_industries,
-    apply_fixed_groups, build_stock_snapshot_average, combine_chip_sources, parse_tdcc,
+    apply_fixed_groups, build_stock_snapshot_average, combine_chip_sources, industry_member_mask, parse_tdcc,
     parse_tej, parse_xq,
 )
 
@@ -158,7 +158,7 @@ st.subheader("產業排行榜")
 st.dataframe(ranking, hide_index=True, width="stretch")
 
 selected = st.selectbox("查看族群", industries, key="selected_industry")
-detail = stocks[stocks.industry == selected].sort_values("analysis_change", ascending=False)
+detail = stocks[industry_member_mask(stocks, selected)].sort_values("analysis_change", ascending=False)
 selected_field = f"group_{analysis_group}"
 detail_display = pd.DataFrame({
     "代碼": detail["code"], "名稱": detail["name"], "股價（元）": detail["price"].map(lambda value: f"{value:,.2f}"),
@@ -206,4 +206,4 @@ if options:
 
 st.download_button("下載目前族群個股 CSV", detail_display.to_csv(index=False).encode("utf-8-sig"), f"{selected}_個股明細.csv", "text/csv")
 with st.expander("指標定義與品質說明"):
-    st.markdown("- 散戶：50 張以下；大戶：400 張以上（包含超級大戶）。\n- 持股走勢另拆為散戶／中實戶／大戶／超級大戶四個級距。\n- 比較值＝最新週持股比例－比較期間各週平均；散戶減少採反向計算。\n- 前 1 週／1 月／1 季採最近 1／4／13 個資料週平均。")
+    st.markdown("- 產業歸屬採多標籤制：XQ 任一順位出現的次產業都會納入該族群。\n- 散戶：50 張以下；大戶：400 張以上（包含超級大戶）。\n- 持股走勢另拆為散戶／中實戶／大戶／超級大戶四個級距。\n- 比較值＝最新週持股比例－比較期間各週平均；散戶減少採反向計算。\n- 前 1 週／1 月／1 季採最近 1／4／13 個資料週平均。")
