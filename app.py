@@ -1,0 +1,250 @@
+from pathlib import Path
+
+import numpy as np
+import pandas as pd
+import plotly.express as px
+import plotly.graph_objects as go
+import streamlit as st
+
+from modules.fixed_groups import (
+    PERIOD_WEEKS, aggregate_industries,
+    apply_fixed_groups, build_stock_snapshot_average, combine_chip_sources, industry_member_mask, parse_tdcc,
+    parse_tej, parse_xq,
+)
+
+DATA = Path(__file__).parent / "data"
+GROUP_NAMES = {"retail": "散戶", "large": "大戶"}
+st.set_page_config(page_title="台股籌碼動能雷達", page_icon=":material/radar:", layout="wide")
+st.markdown("""<style>
+[data-testid="stAppViewContainer"]{background:#050A14;color:#EAF4FF}
+[data-testid="stSidebar"]{background:linear-gradient(180deg,#07162B,#080C17);border-right:1px solid #168BFF55}
+.block-container{padding-top:1.3rem;max-width:1500px}.hero{padding:20px 24px;border:1px solid #168BFF88;border-radius:16px;background:linear-gradient(110deg,#0a2445,#101830 65%,#421022)}
+.note{padding:12px 16px;border-left:3px solid #168BFF;background:#168BFF16;border-radius:7px;color:#C9DCF2}
+</style>""", unsafe_allow_html=True)
+
+
+
+def local_data(signature):
+    cache_dir = DATA / "cache"
+    chip_cache = cache_dir / "chip.parquet"
+    xq_cache = cache_dir / "xq.parquet"
+    if chip_cache.exists() and xq_cache.exists():
+        return pd.read_parquet(chip_cache), pd.read_parquet(xq_cache)
+    tej = [parse_tej(path) for path in sorted((DATA / "tej").glob("*.xlsx"))]
+    tdcc = [parse_tdcc(path) for path in sorted((DATA / "tdcc").glob("*.csv"))]
+    xq_files = sorted((DATA / "xq").glob("*.csv"))
+    return combine_chip_sources(tej, tdcc), parse_xq(xq_files[-1]) if xq_files else pd.DataFrame()
+
+
+def data_signature():
+    files = [path for folder in ("tej", "tdcc", "xq") for path in (DATA / folder).glob("*") if path.is_file()]
+    return tuple((path.relative_to(DATA).as_posix(), path.stat().st_size) for path in sorted(files))
+
+
+def build_snapshot(chip, xq, current, period):
+    return build_stock_snapshot_average(chip, xq, pd.Timestamp(current), period)
+
+
+def equal_range(series, center):
+    values = series.replace([np.inf, -np.inf], np.nan).dropna()
+    span = max(abs(values.min() - center), abs(values.max() - center), .05) if len(values) else 1
+    return [center - span * 1.12, center + span * 1.12]
+
+
+def bubble_chart(groups, selected_label, retail_label, label_count):
+    chart = groups.dropna(subset=["analysis_change", "consensus"]).copy()
+    chart["coverage_text"] = (chart.coverage * 100).map(lambda value: f"{value:.2f}%")
+    chart["chart_label"] = ""
+    if label_count > 0:
+        chart.loc[chart.index[:label_count], "chart_label"] = chart.loc[chart.index[:label_count], "industry"]
+    fig = px.scatter(
+        chart, x="analysis_change", y="consensus", size="selected_count", color="retail_decrease",
+        text="chart_label", size_max=62, color_continuous_scale=[[0, "#126BFF"], [.5, "#EAF2FF"], [1, "#FF355D"]],
+        custom_data=["industry", "rank", "selected_count", "universe_count", "coverage_text", "retail_decrease", "avg_revenue_yoy", "leaders"],
+    )
+    fig.update_traces(textposition="top center", hovertemplate=(
+        "<b>%{customdata[0]}</b>｜第 %{customdata[1]} 名<br>" + selected_label + "相對期間平均：%{x:,.2f} ppts<br>"
+        "共識分數：%{y:,.2f}<br>入選／母體：%{customdata[2]:,} / %{customdata[3]:,}<br>覆蓋率：%{customdata[4]}<br>"
+        + retail_label + "相對平均減少：%{customdata[5]:,.2f} ppts<br>平均營收 YoY：%{customdata[6]:,.2f}%<br>增持前五：%{customdata[7]}<extra></extra>"
+    ))
+    center_y = float(chart.consensus.median())
+    range_x, range_y = equal_range(chart.analysis_change, 0), equal_range(chart.consensus, center_y)
+    fig.add_vline(x=0, line_dash="dot", line_color="#7087a7")
+    fig.add_hline(y=center_y, line_dash="dot", line_color="#7087a7")
+    fig.update_layout(height=620, paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="#091426", font_color="#dbe9f6", xaxis=dict(title=f"{selected_label}－期間平均（ppts）", range=range_x), yaxis=dict(title="族群共識分數", range=range_y), coloraxis_colorbar=dict(title="散戶減少（ppts）"), clickmode="event+select")
+    return fig
+
+
+st.markdown('<div class="hero"><small>OWNERSHIP FLOW INTELLIGENCE</small><br><h1>台股籌碼動能雷達</h1>自訂持股分群，追蹤產業籌碼流向</div>', unsafe_allow_html=True)
+with st.sidebar:
+    st.header("分析設定")
+
+    mode = st.radio("資料來源", ["使用專案內建資料", "手動上傳資料"])
+    if mode == "手動上傳資料":
+        tej_files = st.file_uploader("TEJ Excel（可多選）", type="xlsx", accept_multiple_files=True)
+        tdcc_files = st.file_uploader("集保股權分散表 CSV（可多選）", type="csv", accept_multiple_files=True)
+        xq_file = st.file_uploader("XQ 選股結果 CSV", type="csv")
+        if (not tej_files and not tdcc_files) or xq_file is None:
+            st.info("請上傳至少一份籌碼資料與一份 XQ 檔案。")
+            st.stop()
+        try:
+            chip = combine_chip_sources([parse_tej(f) for f in tej_files], [parse_tdcc(f) for f in tdcc_files])
+            xq = parse_xq(xq_file)
+        except Exception as exc:
+            st.error(f"讀取資料失敗：{exc}")
+            st.stop()
+    else:
+        try:
+            chip, xq = local_data(data_signature())
+        except Exception as exc:
+            st.error(f"讀取資料失敗：{exc}")
+            st.stop()
+
+    st.info("固定定義：大戶 400 張以上（包含 1000 張以上）；散戶 50 張以下。")
+    labels = {"retail": "散戶（50 張以下）", "large": "大戶（400 張以上）"}
+    analysis_group = "large"
+    dates = sorted(pd.to_datetime(chip.date.unique()), reverse=True)
+    current = st.selectbox("觀察日期", dates, format_func=lambda date: pd.Timestamp(date).strftime("%Y-%m-%d"))
+    period = st.selectbox("平均比較期間", list(PERIOD_WEEKS))
+    st.divider()
+    min_price = st.number_input("最低股價（元）", 0., value=30., step=5.)
+    min_volume = st.number_input("最低成交量（張）", 0, value=300, step=100)
+    min_revenue = st.number_input("最低月營收 YoY（%）", value=0., step=5.)
+    min_group = st.number_input("族群最低入選家數", 1, value=3)
+    aligned = st.toggle("只看大戶增加且散戶減少", True)
+
+
+stocks, start, end, weeks = build_snapshot(chip, xq, current, period)
+if start is None:
+    st.error(f"觀察日前沒有足夠資料可計算「{period}」平均。")
+    st.stop()
+universe = xq[(xq.price.fillna(-np.inf) >= min_price) & (xq.volume.fillna(-np.inf) >= min_volume)]
+stocks = stocks[(stocks.price.fillna(-np.inf) >= min_price) & (stocks.volume.fillna(-np.inf) >= min_volume) & (stocks.revenue_yoy.isna() | (stocks.revenue_yoy >= min_revenue))]
+if aligned:
+    stocks = stocks[(stocks.analysis_change > 0) & (stocks.retail_decrease > 0)]
+groups = aggregate_industries(stocks, universe)
+if groups.empty:
+    st.warning("目前條件沒有符合的產業族群，請放寬篩選條件。")
+    st.stop()
+groups = groups[groups.selected_count >= min_group]
+if groups.empty:
+    st.warning("沒有族群達到最低入選家數。")
+    st.stop()
+
+selected_label, retail_label = labels[analysis_group], labels["retail"]
+period_text = f"{pd.Timestamp(start):%Y-%m-%d}～{pd.Timestamp(end):%Y-%m-%d}（{weeks} 週）"
+metrics = [("觀察日期", pd.Timestamp(current).strftime("%Y-%m-%d")), ("平均比較期間", period_text), ("入選股票", f"{stocks.code.nunique():,} 檔"), ("入選族群", f"{len(groups):,} 個"), (f"{GROUP_NAMES[analysis_group]}相對平均差", f"{stocks.analysis_change.median():+,.2f} ppts")]
+for column, (label, value) in zip(st.columns(5), metrics):
+    column.metric(label, value)
+
+st.subheader("產業族群互動泡泡圖")
+st.markdown(f'<div class="note">X＝{selected_label}相對期間平均變化；Y＝覆蓋率 × ln(1＋入選家數)；大小＝入選家數；顏色＝{retail_label}減少幅度。點擊泡泡或下方排行榜任一列，都可切換個股明細。</div>', unsafe_allow_html=True)
+
+st.caption("泡泡圖顯示篩選｜只影響圖上呈現，不會改變下方完整產業排行榜。")
+filter_columns = st.columns([1.15, 1, 1, 1.15])
+max_group_count = max(1, len(groups))
+with filter_columns[0]:
+    bubble_top_n = st.slider("顯示前 N 名", 1, max_group_count, min(35, max_group_count))
+with filter_columns[1]:
+    bubble_min_coverage = st.slider("最低覆蓋率（%）", 0, 100, 30, 5)
+with filter_columns[2]:
+    bubble_min_selected = st.number_input("最低入選家數", 1, value=max(2, min_group), step=1, key="bubble_min_selected")
+with filter_columns[3]:
+    bubble_label_limit = st.slider("最多顯示文字標籤", 0, max_group_count, min(15, max_group_count))
+
+bubble_groups = groups[
+    (groups["coverage"] * 100 >= bubble_min_coverage)
+    & (groups["selected_count"] >= bubble_min_selected)
+].head(bubble_top_n).copy()
+if bubble_groups.empty:
+    st.warning("泡泡圖篩選後沒有符合的族群，請降低最低覆蓋率或最低入選家數。")
+else:
+    event = st.plotly_chart(
+        bubble_chart(bubble_groups, selected_label, retail_label, min(bubble_label_limit, len(bubble_groups))),
+        width="stretch", on_select="rerun", selection_mode="points", key="rotation",
+    )
+    try:
+        if event.selection.points:
+            st.session_state.selected_industry = event.selection.points[0]["customdata"][0]
+    except (AttributeError, KeyError, IndexError, TypeError):
+        pass
+
+industries = groups.industry.tolist()
+if "selected_industry" not in st.session_state or st.session_state.selected_industry not in industries:
+    st.session_state.selected_industry = industries[0]
+
+ranking = pd.DataFrame({
+    "排名": groups["rank"].map(lambda value: f"{value:,.0f}"), "次產業": groups["industry"],
+    "共識分數": groups["consensus"].map(lambda value: f"{value:,.2f}"), "入選家數": groups["selected_count"],
+    "母體家數": groups["universe_count"], "覆蓋率": (groups["coverage"] * 100).map(lambda value: f"{value:,.2f}%"),
+    f"{GROUP_NAMES[analysis_group]}相對平均差（ppts）": groups["analysis_change"].map(lambda value: f"{value:+,.2f}"),
+    "散戶相對平均減少（ppts）": groups["retail_decrease"].map(lambda value: f"{value:+,.2f}"),
+    "平均營收 YoY": groups["avg_revenue_yoy"].map(lambda value: "—" if pd.isna(value) else f"{value:+,.2f}%"),
+})
+st.subheader("產業排行榜")
+st.caption("點擊排行榜任一列（包含次產業名稱），下方個股明細會同步切換至該族群。")
+ranking_event = st.dataframe(
+    ranking, hide_index=True, width="stretch", on_select="rerun",
+    selection_mode="single-row", key="industry_ranking",
+)
+try:
+    if ranking_event.selection.rows:
+        selected_row = ranking_event.selection.rows[0]
+        if 0 <= selected_row < len(groups):
+            clicked_industry = groups.iloc[selected_row]["industry"]
+            if st.session_state.get("selected_industry") != clicked_industry:
+                st.session_state.selected_industry = clicked_industry
+                st.rerun()
+except (AttributeError, KeyError, IndexError, TypeError):
+    pass
+
+selected = st.selectbox("查看族群", industries, key="selected_industry")
+detail = stocks[industry_member_mask(stocks, selected)].sort_values("analysis_change", ascending=False)
+selected_field = f"group_{analysis_group}"
+detail_display = pd.DataFrame({
+    "代碼": detail["code"], "名稱": detail["name"], "股價（元）": detail["price"].map(lambda value: f"{value:,.2f}"),
+    "成交量（張）": detail["volume"].map(lambda value: f"{value:,.0f}"),
+    "月營收 YoY": detail["revenue_yoy"].map(lambda value: "—" if pd.isna(value) else f"{value:+,.2f}%"),
+    f"最新{GROUP_NAMES[analysis_group]}持股": detail[selected_field].map(lambda value: f"{value:,.2f}%"),
+    f"平均{GROUP_NAMES[analysis_group]}持股": detail[f"avg_{selected_field}"].map(lambda value: f"{value:,.2f}%"),
+    f"{GROUP_NAMES[analysis_group]}相對平均差": detail["analysis_change"].map(lambda value: f"{value:+,.2f} ppts"),
+    "散戶相對平均減少": detail["retail_decrease"].map(lambda value: f"{value:+,.2f} ppts"),
+    "採樣週數": detail["history_weeks"], "股東人數": detail["holders"], "所有次產業": detail["industry_tags"],
+})
+st.subheader(f"{selected}｜個股明細")
+st.caption("點選下表任一個股列，下方持股走勢會自動切換。")
+stock_event = st.dataframe(detail_display, hide_index=True, width="stretch", on_select="rerun", selection_mode="single-row", key="stock_table")
+
+options = detail.apply(lambda row: f"{row.code} {row['name']}", axis=1).tolist()
+try:
+    if stock_event.selection.rows:
+        selected_row = stock_event.selection.rows[0]
+        if 0 <= selected_row < len(options):
+            st.session_state.selected_stock_option = options[selected_row]
+except (AttributeError, KeyError, IndexError, TypeError):
+    pass
+if options:
+    if st.session_state.get("selected_stock_option") not in options:
+        st.session_state.selected_stock_option = options[0]
+    choice = st.selectbox("查看個股持股走勢", options, key="selected_stock_option")
+    code = choice.split(" ", 1)[0]
+    row = detail[detail.code == code].iloc[0]
+    history = chip[chip.code == code].sort_values("date")
+    st.subheader(f"{row['name']}（{code}）｜四級距持股結構走勢")
+    structure = go.Figure()
+    structure_fields = [
+        ("retail_50", "散戶｜50 張以下", "#FF355D"),
+        ("mid_50_400", "中實戶｜50–400 張", "#FF8FA3"),
+        ("large_400_1000", "大戶｜400–1000 張", "#46B8FF"),
+        ("super_1000", "超級大戶｜1000 張以上", "#126BFF"),
+    ]
+    for field, name, color in structure_fields:
+        structure.add_trace(go.Scatter(x=history.date, y=history[field], name=name, mode="lines+markers", line=dict(color=color, width=2.6), hovertemplate="%{y:,.2f}%<extra>%{fullData.name}</extra>"))
+    structure.update_layout(height=460, paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="#091426", font_color="#dbe9f6", yaxis_title="持股比例（%）", xaxis_title="資料日期", hovermode="x unified", legend=dict(orientation="h", y=1.15))
+    st.plotly_chart(structure, width="stretch")
+    latest = history.iloc[-1]
+    st.caption(f"最新結構：散戶 {latest.retail_50:,.2f}%｜中實戶 {latest.mid_50_400:,.2f}%｜大戶 {latest.large_400_1000:,.2f}%｜超級大戶 {latest.super_1000:,.2f}%")
+
+st.download_button("下載目前族群個股 CSV", detail_display.to_csv(index=False).encode("utf-8-sig"), f"{selected}_個股明細.csv", "text/csv")
+with st.expander("指標定義與品質說明"):
+    st.markdown("- 產業歸屬採多標籤制：XQ 任一順位出現的次產業都會納入該族群。\n- 散戶：50 張以下；大戶：400 張以上（包含超級大戶）。\n- 持股走勢另拆為散戶／中實戶／大戶／超級大戶四個級距。\n- 比較值＝最新週持股比例－比較期間各週平均；散戶減少採反向計算。\n- 前 1 週／1 月／1 季採最近 1／4／13 個資料週平均。")
